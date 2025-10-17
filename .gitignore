@@ -1,3 +1,4 @@
 target
 spacers.json
 must_have.json
+Cargo.lock

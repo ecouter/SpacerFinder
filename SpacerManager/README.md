@@ -1,13 +1,12 @@
-# Spacer Finder
+# Spacer Manager
 
-A Rust CLI tool to find the minimal chain of spacers and imaging train elements that connect specified threads with an exact total length.
+A Rust GUI application for managing spacer collections using Slint.
 
 ## Features
 
-- Finds chains of spacers with compatible threads (same size, opposite gender)
-- Supports multiple uses of spacers
-- Enforces required "must-have" elements in a specific order
-- Minimizes the total number of elements in the chain
+- Add, edit, and delete spacers with thread specifications and lengths
+- Save and load spacer collections to/from JSON files
+- User-friendly graphical interface for spacer management
 
 ## Installation
 
@@ -17,23 +16,22 @@ A Rust CLI tool to find the minimal chain of spacers and imaging train elements 
 
 ## Usage
 
+Run the application:
+
 ```bash
-./target/release/spacer_finder <spacers.json> <must_have.json> <start_thread> <end_thread> <total_length>
+./target/release/spacer_manager
 ```
 
-### Parameters
+The GUI will open, allowing you to:
+- Add new spacers by clicking "Add Spacer"
+- Edit existing spacers by clicking "Edit" on a spacer row
+- Delete spacers by clicking "Delete" on a spacer row
+- Save the current collection to `spacers.json` by clicking "Save"
+- Load a collection from `spacers.json` by clicking "Load"
 
-- `spacers.json`: JSON file containing available spacers
-- `must_have.json`: JSON file containing required elements in order
-- `start_thread`: Starting thread type (e.g., "M54M")
-- `end_thread`: Ending thread type (e.g., "M54F")
-- `total_length`: Exact total length to achieve (float)
+## JSON File Format
 
-## JSON File Formats
-
-### Spacers JSON
-
-An array of spacer objects:
+Spacers are stored in `spacers.json` as an array of spacer objects:
 
 ```json
 [
@@ -50,57 +48,20 @@ An array of spacer objects:
 ]
 ```
 
-### Must-Have JSON
+Each spacer has:
+- `thread_in`: Input thread specification (e.g., "M54F")
+- `thread_out`: Output thread specification (e.g., "M54M")
+- `length`: Length in millimeters (float)
 
-An array of required elements in the order they must appear:
+## Thread Specifications
 
-```json
-[
-  {
-    "thread_in": "M54F",
-    "thread_out": "M54M",
-    "length": 5.0
-  },
-  {
-    "thread_in": "M54M",
-    "thread_out": "M54F",
-    "length": 3.0
-  }
-]
-```
+Threads are specified as size + gender:
+- M for male
+- F for female
 
-## Thread Compatibility
-
-Threads are specified as size + gender (M for male, F for female), e.g., "M54M".
-
-Connections require:
-- Same size (e.g., M54)
-- Opposite gender (M connects to F, F to M)
-
-Adapters with length 0 can be used for size changes.
-
-## Examples
-
-### Basic Usage
-
-```bash
-./spacer_finder spacers.json must_have.json M54M M54F 8.0
-```
-
-Finds a chain from M54M to M54F with total length 8.0, including all must-have elements.
-
-### Output
-
-```
-Found chain with 3 elements:
-Thread in: M54F, Thread out: M54M, Length: 5
-Thread in: M54F, Thread out: M54F, Length: 0
-Thread in: M54M, Thread out: M54F, Length: 3
-```
+Example: "M54M" means a male M54 thread.
 
 ## Notes
 
-- Lengths are floating-point for precision
-- The tool uses functional programming principles
-- Chain length is limited to 10 elements to prevent excessive computation
-- Multiple uses of the same spacer are allowed
+- The application uses functional programming principles
+- Data is persisted in JSON format for easy editing and sharing
