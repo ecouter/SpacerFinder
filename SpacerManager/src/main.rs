@@ -21,11 +21,16 @@ slint::slint! {
         callback add-spacer(UiSpacer);
         callback update-spacer(int, UiSpacer);
         callback delete-spacer(int);
+        callback check-duplicate(string, string, float);
         callback save-spacers();
         callback load-spacers();
 
         property <bool> show-add-dialog: false;
         property <bool> show-edit-dialog: false;
+
+        // Duplicate checking
+        in-out property <string> duplicate-warning: "";
+        in-out property <bool> show-duplicate-options: false;
 
         VerticalLayout {
             HorizontalLayout {
@@ -94,8 +99,8 @@ slint::slint! {
         Rectangle {
             x: (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2;
-            width: 300px;
-            height: 200px;
+            width: 350px;
+            height: 280px;
             background: #4d4d4d;
             border-radius: 8px;
             border-width: 1px;
@@ -121,15 +126,36 @@ slint::slint! {
                         }
                     }
                 }
+
+                // Warning area for duplicates
+                Rectangle {
+                    height: 40px;
+                    visible: duplicate-warning != "";
+                    background: #ffdddd;
+                    border-radius: 4px;
+                    border-width: 1px;
+                    border-color: #ff6666;
+
+                    Text {
+                        text: duplicate-warning;
+                        color: #cc0000;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+                }
+
                 HorizontalLayout {
                     Button {
                         text: "Cancel";
                         clicked => {
+                            duplicate-warning = "";
+                            show-duplicate-options = false;
                             show-add-dialog = false;
                         }
                     }
                     Button {
-                        text: "Add";
+                        text: "Add Anyway";
+                        visible: show-duplicate-options;
                         clicked => {
                             if thread-in.text != "" && thread-out.text != "" && length.text != "" {
                                 add-spacer({
@@ -140,7 +166,17 @@ slint::slint! {
                                 thread-in.text = "";
                                 thread-out.text = "";
                                 length.text = "";
+                                duplicate-warning = "";
+                                show-duplicate-options = false;
                                 show-add-dialog = false;
+                            }
+                        }
+                    }
+                    Button {
+                        text: "Add";
+                        clicked => {
+                            if thread-in.text != "" && thread-out.text != "" && length.text != "" {
+                                check-duplicate(thread-in.text, thread-out.text, length.text.to-float());
                             }
                         }
                     }
@@ -153,7 +189,7 @@ slint::slint! {
             y: (parent.height - self.height) / 2;
             width: 300px;
             height: 200px;
-            background: #f0f0f0;
+            background: #4d4d4d;
             border-radius: 8px;
             border-width: 1px;
             border-color: #cccccc;
@@ -248,6 +284,15 @@ fn save_spacers_to_file(spacers: &[Spacer]) -> Result<(), Box<dyn std::error::Er
     let data = serde_json::to_string_pretty(spacers)?;
     fs::write("spacers.json", data)?;
     Ok(())
+}
+
+// Check if a spacer with the same specifications already exists
+fn spacer_exists(spacers: &[Spacer], thread_in: &str, thread_out: &str, length: f64) -> bool {
+    spacers.iter().any(|spacer| {
+        spacer.thread_in == thread_in &&
+        spacer.thread_out == thread_out &&
+        (spacer.length - length).abs() < 1e-6
+    })
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -361,6 +406,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             if let Some(window) = window_weak_load.upgrade() {
                 window.set_spacers(slint::ModelRc::new(slint::VecModel::from(slint_spacers)));
+            }
+        }
+    });
+
+    // Check duplicate callback
+    let spacers_clone = spacers.clone();
+    let window_weak_check = window.as_weak();
+    window.on_check_duplicate(move |thread_in, thread_out, length| {
+        let exists = spacer_exists(&spacers_clone.borrow(), &thread_in.to_string(), &thread_out.to_string(), length as f64);
+
+        if let Some(window) = window_weak_check.upgrade() {
+            if exists {
+                window.set_duplicate_warning("⚠️ A spacer with these exact specifications already exists!".into());
+                window.set_show_duplicate_options(true);
+            } else {
+                // No duplicate, proceed with adding
+                let spacer = UiSpacer {
+                    thread_in: thread_in,
+                    thread_out: thread_out,
+                    length: length,
+                };
+                // Call the add callback
+                window.invoke_add_spacer(spacer);
+                window.set_duplicate_warning("".into());
+                window.set_show_duplicate_options(false);
             }
         }
     });

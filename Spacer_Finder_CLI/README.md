@@ -1,39 +1,78 @@
-# Spacer Finder
+# Spacer Finder CLI
 
-A Rust CLI tool to find the minimal chain of spacers and imaging train elements that connect specified threads with an exact total length.
+A high-performance Rust command-line tool for finding the minimal chain of spacers and imaging train elements that connect specified threads with an exact total length. This is the core algorithm component of the SpacerFinder suite.
 
 ## Features
 
-- Finds chains of spacers with compatible threads (same size, opposite gender)
-- Supports multiple uses of spacers
-- Enforces required "must-have" elements in a specific order
-- Minimizes the total number of elements in the chain
+- **Optimal Chain Finding**: Finds the shortest possible chain of spacers that meets exact length requirements
+- **Thread Compatibility**: Automatically ensures compatible thread connections (same size, opposite gender)
+- **Required Elements**: Enforces inclusion of "must-have" elements in a specific order
+- **Flexible Usage**: Supports multiple uses of the same spacer
+- **Functional Programming**: Implemented using functional programming principles for reliability and maintainability
+- **JSON Data Format**: Uses human-readable JSON files for input and output
 
 ## Installation
 
-1. Ensure Rust is installed (https://rustup.rs/)
-2. Clone or download the project
-3. Build with `cargo build --release`
+### Prerequisites
+- Rust toolchain (install from [rustup.rs](https://rustup.rs/))
+
+### Build from Source
+```bash
+cd Spacer_Finder_CLI
+cargo build --release
+```
+
+The binary will be available at `target/release/spacer_finder`.
 
 ## Usage
 
 ```bash
-./target/release/spacer_finder <spacers.json> <must_have.json> <start_thread> <end_thread> <total_length>
+spacer_finder <spacers.json> <must_have.json> <start_thread> <end_thread> <total_length>
 ```
 
 ### Parameters
 
-- `spacers.json`: JSON file containing available spacers
-- `must_have.json`: JSON file containing required elements in order
-- `start_thread`: Starting thread type (e.g., "M54M")
-- `end_thread`: Ending thread type (e.g., "M54F")
-- `total_length`: Exact total length to achieve (float)
+| Parameter | Description | Example |
+|-----------|-------------|---------|
+| `spacers.json` | JSON file containing available spacer elements | `spacers.json` |
+| `must_have.json` | JSON file containing required elements in order | `must_have.json` |
+| `start_thread` | Starting thread specification | `M54M` |
+| `end_thread` | Ending thread specification | `M54F` |
+| `total_length` | Exact total length to achieve (float) | `8.0` |
+
+### Command Line Help
+
+Run `spacer_finder --help` for detailed usage information.
 
 ## JSON File Formats
 
-### Spacers JSON
+### Available Spacers (spacers.json)
 
-An array of spacer objects:
+An array of spacer objects representing your available inventory:
+
+```json
+[
+  {
+    "thread_in": "M54F",
+    "thread_out": "M54M",
+    "length": 5.0
+  },
+  {
+    "thread_in": "M54M",
+    "thread_out": "M54F",
+    "length": 3.0
+  },
+  {
+    "thread_in": "M42F",
+    "thread_out": "M54F",
+    "length": 0.0
+  }
+]
+```
+
+### Required Elements (must_have.json)
+
+An array of elements that **must** be included in the chain, in the specified order:
 
 ```json
 [
@@ -50,47 +89,38 @@ An array of spacer objects:
 ]
 ```
 
-### Must-Have JSON
+Each element has:
+- `thread_in`: Input thread specification (e.g., "M54F")
+- `thread_out`: Output thread specification (e.g., "M54M")
+- `length`: Length in millimeters (float)
 
-An array of required elements in the order they must appear:
+## Thread Specifications
 
-```json
-[
-  {
-    "thread_in": "M54F",
-    "thread_out": "M54M",
-    "length": 5.0
-  },
-  {
-    "thread_in": "M54M",
-    "thread_out": "M54F",
-    "length": 3.0
-  }
-]
-```
+Threads are specified as **size + gender**:
+- **M**: Male thread
+- **F**: Female thread
 
-## Thread Compatibility
+**Example**: `"M54M"` means a male M54 thread.
 
-Threads are specified as size + gender (M for male, F for female), e.g., "M54M".
+### Connection Rules
 
-Connections require:
-- Same size (e.g., M54)
-- Opposite gender (M connects to F, F to M)
+For two elements to connect:
+- Thread sizes must match (e.g., M54 connects to M54)
+- Genders must be opposite (M connects to F, F connects to M)
 
-Adapters with length 0 can be used for size changes.
+**Note**: Adapters with `length: 0.0` can be used for size transitions.
 
 ## Examples
 
-### Basic Usage
+### Basic Chain Finding
+
+Find a chain from M54M to M54F with total length 8.0:
 
 ```bash
-./spacer_finder spacers.json must_have.json M54M M54F 8.0
+spacer_finder spacers.json must_have.json M54M M54F 8.0
 ```
 
-Finds a chain from M54M to M54F with total length 8.0, including all must-have elements.
-
-### Output
-
+**Sample Output:**
 ```
 Found chain with 3 elements:
 Thread in: M54F, Thread out: M54M, Length: 5
@@ -98,9 +128,37 @@ Thread in: M54F, Thread out: M54F, Length: 0
 Thread in: M54M, Thread out: M54F, Length: 3
 ```
 
-## Notes
+### With Required Elements
 
-- Lengths are floating-point for precision
-- The tool uses functional programming principles
-- Chain length is limited to 10 elements to prevent excessive computation
-- Multiple uses of the same spacer are allowed
+If `must_have.json` contains required elements, they will be included in order in the final chain.
+
+### No Solution Found
+
+If no valid chain exists:
+```
+No chain found from M54M to M54F that sums to 8.0 with required elements
+```
+
+## Integration with GUI Tools
+
+This CLI tool is designed to work seamlessly with the SpacerFinder GUI applications:
+
+- **SpacerManager**: Create and manage your `spacers.json` file
+- **RigCreator**: Create and manage your `must_have.json` file and test configurations
+
+## Technical Details
+
+- **Algorithm**: Backtracking search with pruning for efficiency
+- **Performance**: Chain length limited to 10 elements to prevent excessive computation
+- **Precision**: Uses floating-point arithmetic with epsilon comparison for length matching
+- **Memory**: Minimal memory footprint, suitable for large spacer inventories
+
+## Troubleshooting
+
+- **No chain found**: Verify thread compatibility and length requirements
+- **Invalid JSON**: Ensure proper JSON syntax in input files
+- **Performance issues**: Large spacer inventories may take time; consider filtering your input files
+
+## Contributing
+
+This tool follows functional programming principles. Contributions should maintain this paradigm and include appropriate tests.
