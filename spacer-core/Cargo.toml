@@ -1,0 +1,9 @@
+[package]
+name = "spacer-core"
+version.workspace = true
+edition.workspace = true
+description = "Shared domain model and chain-finding logic for the SpacerFinder tools"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true

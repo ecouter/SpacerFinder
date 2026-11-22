@@ -1,616 +1,350 @@
-use serde::{Deserialize, Serialize};
-use std::fs;
-use std::rc::Rc;
+use spacer_core::{
+    add_element, delete_element, find_minimal_chain, format_length, load_elements, move_down,
+    move_up, save_elements, update_element, validate_length, validate_thread, Element,
+};
 use std::cell::RefCell;
+use std::rc::Rc;
 
-slint::slint! {
-    import { Button, ScrollView, ListView, LineEdit, GridBox } from "std-widgets.slint";
+slint::include_modules!();
 
-    struct UiRig {
-        thread_in: string,
-        thread_out: string,
-        length: float,
-    }
+#[derive(Default)]
+struct State {
+    rigs: Vec<Element>,
+    edit_index: Option<usize>,
+    dirty: bool,
+}
 
-    export component MainWindow inherits Window {
-        title: "Rig Creator";
-        width: 1000px;
-        height: 700px;
+fn refresh(window: &MainWindow, state: &State) {
+    let rigs: Vec<UiElement> = state
+        .rigs
+        .iter()
+        .map(|element| UiElement {
+            thread_in: element.thread_in.clone().into(),
+            thread_out: element.thread_out.clone().into(),
+            length: element.length as f32,
+        })
+        .collect();
+    window.set_rigs(slint::ModelRc::new(slint::VecModel::from(rigs)));
+    window.set_rig_count(state.rigs.len() as i32);
+    window.set_dirty(state.dirty);
+}
 
-        in-out property <[UiRig]> rigs: [];
-        callback add-rig(UiRig);
-        callback update-rig(int, UiRig);
-        callback delete-rig(int);
-        callback move-rig-up(int);
-        callback move-rig-down(int);
-        callback save-rigs();
-        callback load-rigs();
-        callback find-chain();
+fn set_status(window: &MainWindow, message: &str, kind: &str) {
+    window.set_status_message(message.into());
+    window.set_status_kind(kind.into());
+}
 
-        property <bool> show-add-dialog: false;
-        property <bool> show-edit-dialog: false;
+fn clear_result(window: &MainWindow) {
+    window.set_result_visible(false);
+    window.set_result_steps(slint::ModelRc::new(slint::VecModel::from(
+        Vec::<UiStep>::new(),
+    )));
+}
 
-        // Chain finding properties
-        in-out property <string> spacers-path: "spacers.json";
-        in-out property <string> start-thread: "";
-        in-out property <string> end-thread: "";
-        in-out property <string> target-length: "";
-        in-out property <string> chain-result: "Enter parameters and click 'Find Chain' to test your rig configuration.";
+fn wire_callbacks(window: &MainWindow, state: Rc<RefCell<State>>) {
+    let weak = window.as_weak();
+    let shared = state.clone();
+    window.on_open_add(move || {
+        if let Some(window) = weak.upgrade() {
+            shared.borrow_mut().edit_index = None;
+            window.set_form_title("Add required element".into());
+            window.set_form_thread_in("".into());
+            window.set_form_thread_out("".into());
+            window.set_form_length("".into());
+            window.set_form_error("".into());
+            window.set_show_form_dialog(true);
+        }
+    });
 
-        VerticalLayout {
-            // Rig management section
-            Text { text: "Rig Management"; font-weight: 600; }
-            HorizontalLayout {
-                Button {
-                    text: "Add Rig";
-                    clicked => {
-                        show-add-dialog = true;
-                    }
-                }
-                Button {
-                    text: "Save";
-                    clicked => {
-                        save-rigs();
-                    }
-                }
-                Button {
-                    text: "Load";
-                    clicked => {
-                        load-rigs();
-                    }
-                }
+    let weak = window.as_weak();
+    let shared = state.clone();
+    window.on_open_edit(move |index| {
+        if let Some(window) = weak.upgrade() {
+            let element = shared.borrow().rigs.get(index as usize).cloned();
+            if let Some(element) = element {
+                shared.borrow_mut().edit_index = Some(index as usize);
+                window.set_form_title("Edit required element".into());
+                window.set_form_thread_in(element.thread_in.clone().into());
+                window.set_form_thread_out(element.thread_out.clone().into());
+                window.set_form_length(format_length(element.length).into());
+                window.set_form_error("".into());
+                window.set_show_form_dialog(true);
             }
+        }
+    });
 
-            ScrollView {
-                min-height: 200px;
-                ListView {
-                    for rig[index] in rigs: Rectangle {
-                        height: 40px;
-                        HorizontalLayout {
-                            Text {
-                                text: @tr("{}.", index + 1);
-                                width: 30px;
-                                font-weight: 600;
-                            }
-                            Text {
-                                text: rig.thread_in;
-                                width: 80px;
-                            }
-                            Text {
-                                text: "→";
-                                width: 20px;
-                            }
-                            Text {
-                                text: rig.thread_out;
-                                width: 80px;
-                            }
-                            Text {
-                                text: @tr("{} mm", rig.length);
-                                width: 80px;
-                            }
-                            Button {
-                                text: "↑";
-                                enabled: index > 0;
-                                clicked => {
-                                    move-rig-up(index);
+    let weak = window.as_weak();
+    let shared = state.clone();
+    window.on_save_form(move |_force| {
+        let Some(window) = weak.upgrade() else { return };
+        let thread_in = window.get_form_thread_in().to_string();
+        let thread_out = window.get_form_thread_out().to_string();
+        let length_text = window.get_form_length().to_string();
+
+        let length = match length_text.parse::<f64>() {
+            Ok(value) => value,
+            Err(_) => {
+                window.set_form_error("Enter a valid length, for example 5.0.".into());
+                return;
+            }
+        };
+        if let Err(message) = validate_thread(&thread_in)
+            .and_then(|_| validate_thread(&thread_out))
+            .and_then(|_| validate_length(length))
+        {
+            window.set_form_error(message.into());
+            return;
+        }
+
+        let element = Element::new(thread_in, thread_out, length);
+        let mut current = shared.borrow_mut();
+        current.rigs = match current.edit_index {
+            Some(index) => update_element(&current.rigs, index, element),
+            None => add_element(&current.rigs, element),
+        };
+        current.edit_index = None;
+        current.dirty = true;
+        refresh(&window, &current);
+        window.set_show_form_dialog(false);
+        window.set_form_error("".into());
+        set_status(&window, "Required element saved.", "success");
+    });
+
+    let weak = window.as_weak();
+    let shared = state.clone();
+    window.on_cancel_form(move || {
+        if let Some(window) = weak.upgrade() {
+            shared.borrow_mut().edit_index = None;
+            window.set_show_form_dialog(false);
+            window.set_form_error("".into());
+        }
+    });
+
+    let weak = window.as_weak();
+    let shared = state.clone();
+    window.on_confirm_delete(move || {
+        let Some(window) = weak.upgrade() else { return };
+        let index = window.get_delete_index() as usize;
+        let mut current = shared.borrow_mut();
+        if index < current.rigs.len() {
+            current.rigs = delete_element(&current.rigs, index);
+            current.dirty = true;
+            refresh(&window, &current);
+            set_status(&window, "Required element deleted.", "success");
+        }
+        window.set_show_delete_dialog(false);
+    });
+
+    let weak = window.as_weak();
+    window.on_cancel_delete(move || {
+        if let Some(window) = weak.upgrade() {
+            window.set_show_delete_dialog(false);
+        }
+    });
+
+    let weak = window.as_weak();
+    let shared = state.clone();
+    window.on_move_up(move |index| {
+        let Some(window) = weak.upgrade() else { return };
+        let mut current = shared.borrow_mut();
+        current.rigs = move_up(&current.rigs, index as usize);
+        current.dirty = true;
+        refresh(&window, &current);
+    });
+
+    let weak = window.as_weak();
+    let shared = state.clone();
+    window.on_move_down(move |index| {
+        let Some(window) = weak.upgrade() else { return };
+        let mut current = shared.borrow_mut();
+        current.rigs = move_down(&current.rigs, index as usize);
+        current.dirty = true;
+        refresh(&window, &current);
+    });
+
+    let weak = window.as_weak();
+    let shared = state.clone();
+    window.on_save_file(move || {
+        let Some(window) = weak.upgrade() else { return };
+        let path = window.get_file_path().to_string();
+        let current = shared.borrow();
+        match save_elements(&path, &current.rigs) {
+            Ok(()) => {
+                drop(current);
+                shared.borrow_mut().dirty = false;
+                refresh(&window, &shared.borrow());
+                set_status(
+                    &window,
+                    &format!("Saved {} elements to {}.", window.get_file_path(), path),
+                    "success",
+                );
+            }
+            Err(error) => set_status(&window, &error, "error"),
+        }
+    });
+
+    let weak = window.as_weak();
+    let shared = state.clone();
+    window.on_load_file(move || {
+        let Some(window) = weak.upgrade() else { return };
+        let path = window.get_file_path().to_string();
+        match load_elements(&path) {
+            Ok(rigs) => {
+                let mut current = shared.borrow_mut();
+                current.rigs = rigs;
+                current.dirty = false;
+                let count = current.rigs.len();
+                refresh(&window, &current);
+                set_status(
+                    &window,
+                    &format!("Loaded {count} elements from {path}."),
+                    "success",
+                );
+            }
+            Err(error) => set_status(&window, &error, "error"),
+        }
+    });
+
+    let weak = window.as_weak();
+    let shared = state.clone();
+    window.on_find_chain(move || {
+        let Some(window) = weak.upgrade() else { return };
+        let spacers_path = window.get_spacers_path().to_string();
+        let start = window.get_start_thread().to_string();
+        let end = window.get_end_thread().to_string();
+        let target_text = window.get_target_length().to_string();
+
+        let result_message = match validate_thread(&start).and_then(|_| validate_thread(&end)) {
+            Err(message) => {
+                clear_result(&window);
+                format!("Invalid thread: {message}")
+            }
+            Ok(()) => match target_text.parse::<f64>() {
+                Err(_) => {
+                    clear_result(&window);
+                    "Enter a valid target length, for example 8.0.".to_string()
+                }
+                Ok(target) => match validate_length(target) {
+                    Err(message) => {
+                        clear_result(&window);
+                        message
+                    }
+                    Ok(()) => match load_elements(&spacers_path) {
+                        Err(message) => {
+                            clear_result(&window);
+                            message
+                        }
+                        Ok(spacers) => {
+                            let current = shared.borrow();
+                            match find_minimal_chain(&spacers, &current.rigs, &start, &end, target) {
+                                Some(chain) => {
+                                    let steps: Vec<UiStep> = chain
+                                        .steps
+                                        .iter()
+                                        .enumerate()
+                                        .map(|(index, step)| UiStep {
+                                            number: (index + 1) as i32,
+                                            thread_in: step.element.thread_in.clone().into(),
+                                            thread_out: step.element.thread_out.clone().into(),
+                                            length: step.element.length as f32,
+                                            cumulative: step.cumulative_length as f32,
+                                            required: step.required,
+                                        })
+                                        .collect();
+                                    let summary = format!(
+                                        "Found {} steps · total {} mm · {} required",
+                                        steps.len(),
+                                        format_length(chain.total_length),
+                                        chain.required_count()
+                                    );
+                                    window.set_result_steps(slint::ModelRc::new(slint::VecModel::from(steps)));
+                                    window.set_result_visible(true);
+                                    window.set_result_kind("success".into());
+                                    summary
+                                }
+                                None => {
+                                    clear_result(&window);
+                                    window.set_result_visible(true);
+                                    window.set_result_kind("error".into());
+                                    format!(
+                                        "No chain from {} to {} totaling {} mm with all required elements. Threads connect when sizes match and genders are opposite; try flipping an endpoint.",
+                                        start,
+                                        end,
+                                        format_length(target)
+                                    )
                                 }
                             }
-                            Button {
-                                text: "↓";
-                                enabled: index < rigs.length - 1;
-                                clicked => {
-                                    move-rig-down(index);
-                                }
-                            }
-                            Button {
-                                text: "Edit";
-                                clicked => {
-                                    edit-index = index;
-                                    show-edit-dialog = true;
-                                }
-                            }
-                            Button {
-                                text: "Delete";
-                                clicked => {
-                                    delete-rig(index);
-                                }
-                            }
                         }
-                    }
-                }
-            }
+                    },
+                },
+            },
+        };
+        window.set_result_summary(result_message.into());
+    });
 
-            // Chain finding section
-            Rectangle {
-                border-width: 1px;
-                border-color: #cccccc;
-                border-radius: 4px;
-
-                VerticalLayout {
-                    padding: 10px;
-                    Text { text: "Test Chain Finding"; font-weight: 600; }
-
-                    GridBox {
-                        Row {
-                            Text { text: "Spacers File:"; }
-                            spacers-file := LineEdit {
-                                text: spacers-path;
-                                edited => { spacers-path = spacers-file.text; }
-                            }
-                        }
-                        Row {
-                            Text { text: "Start Thread:"; }
-                            start-thread-input := LineEdit {
-                                text: start-thread;
-                                edited => { start-thread = start-thread-input.text; }
-                            }
-                        }
-                        Row {
-                            Text { text: "End Thread:"; }
-                            end-thread-input := LineEdit {
-                                text: end-thread;
-                                edited => { end-thread = end-thread-input.text; }
-                            }
-                        }
-                        Row {
-                            Text { text: "Target Length:"; }
-                            target-length-input := LineEdit {
-                                text: target-length;
-                                input-type: decimal;
-                                edited => { target-length = target-length-input.text; }
-                            }
-                        }
-                    }
-
-                    Button {
-                        text: "Find Chain";
-                        clicked => {
-                            find-chain();
-                        }
-                    }
-
-                    ScrollView {
-                        min-height: 100px;
-                        Text {
-                            text: chain-result;
-                            wrap: word-wrap;
-                        }
-                    }
-                }
-            }
+    let weak = window.as_weak();
+    window.on_clear_status(move || {
+        if let Some(window) = weak.upgrade() {
+            window.set_status_message("".into());
         }
-
-        property <int> edit-index: -1;
-
-        Rectangle {
-            x: (parent.width - self.width) / 2;
-            y: (parent.height - self.height) / 2;
-            width: 300px;
-            height: 200px;
-            background: #4d4d4d;
-            border-radius: 8px;
-            border-width: 1px;
-            border-color: #cccccc;
-            visible: show-add-dialog;
-
-            VerticalLayout {
-                padding: 20px;
-                Text { text: "Add Rig"; }
-                GridBox {
-                    Row {
-                        Text { text: "Thread In:"; }
-                        thread-in := LineEdit {}
-                    }
-                    Row {
-                        Text { text: "Thread Out:"; }
-                        thread-out := LineEdit {}
-                    }
-                    Row {
-                        Text { text: "Length:"; }
-                        length := LineEdit {
-                            input-type: decimal;
-                        }
-                    }
-                }
-                HorizontalLayout {
-                    Button {
-                        text: "Cancel";
-                        clicked => {
-                            show-add-dialog = false;
-                        }
-                    }
-                    Button {
-                        text: "Add";
-                        clicked => {
-                            if thread-in.text != "" && thread-out.text != "" && length.text != "" {
-                                add-rig({
-                                    thread_in: thread-in.text,
-                                    thread_out: thread-out.text,
-                                    length: length.text.to-float(),
-                                });
-                                thread-in.text = "";
-                                thread-out.text = "";
-                                length.text = "";
-                                show-add-dialog = false;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        Rectangle {
-            x: (parent.width - self.width) / 2;
-            y: (parent.height - self.height) / 2;
-            width: 300px;
-            height: 200px;
-            background: #4d4d4d;
-            border-radius: 8px;
-            border-width: 1px;
-            border-color: #cccccc;
-            visible: show-edit-dialog;
-
-            VerticalLayout {
-                padding: 20px;
-                Text { text: "Edit Rig"; }
-                GridBox {
-                    Row {
-                        Text { text: "Thread In:"; }
-                        edit-thread-in := LineEdit {}
-                    }
-                    Row {
-                        Text { text: "Thread Out:"; }
-                        edit-thread-out := LineEdit {}
-                    }
-                    Row {
-                        Text { text: "Length:"; }
-                        edit-length := LineEdit {
-                            input-type: decimal;
-                        }
-                    }
-                }
-                HorizontalLayout {
-                    Button {
-                        text: "Cancel";
-                        clicked => {
-                            show-edit-dialog = false;
-                        }
-                    }
-                    Button {
-                        text: "Update";
-                        clicked => {
-                            if edit-thread-in.text != "" && edit-thread-out.text != "" && edit-length.text != "" && edit-index >= 0 {
-                                update-rig(edit-index, {
-                                    thread_in: edit-thread-in.text,
-                                    thread_out: edit-thread-out.text,
-                                    length: edit-length.text.to-float(),
-                                });
-                                show-edit-dialog = false;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-#[derive(Deserialize, Serialize, Clone, Debug)]
-struct Rig {
-    thread_in: String,
-    thread_out: String,
-    length: f64,
-}
-
-// Pure functions for rig operations
-fn add_rig(rigs: &[Rig], new_rig: Rig) -> Vec<Rig> {
-    let mut result = rigs.to_vec();
-    result.push(new_rig);
-    result
-}
-
-fn update_rig(rigs: &[Rig], index: usize, updated_rig: Rig) -> Vec<Rig> {
-    rigs.iter().enumerate().map(|(i, rig)| {
-        if i == index {
-            updated_rig.clone()
-        } else {
-            rig.clone()
-        }
-    }).collect()
-}
-
-fn delete_rig(rigs: &[Rig], index: usize) -> Vec<Rig> {
-    rigs.iter().enumerate().filter_map(|(i, rig)| {
-        if i != index {
-            Some(rig.clone())
-        } else {
-            None
-        }
-    }).collect()
-}
-
-fn move_rig_up(rigs: &[Rig], index: usize) -> Vec<Rig> {
-    if index == 0 || index >= rigs.len() {
-        return rigs.to_vec();
-    }
-    let mut result = rigs.to_vec();
-    result.swap(index - 1, index);
-    result
-}
-
-fn move_rig_down(rigs: &[Rig], index: usize) -> Vec<Rig> {
-    if index >= rigs.len() - 1 {
-        return rigs.to_vec();
-    }
-    let mut result = rigs.to_vec();
-    result.swap(index, index + 1);
-    result
-}
-
-fn load_rigs_from_file() -> Result<Vec<Rig>, Box<dyn std::error::Error>> {
-    let data = fs::read_to_string("must_have.json")?;
-    let rigs: Vec<Rig> = serde_json::from_str(&data)?;
-    Ok(rigs)
-}
-
-fn save_rigs_to_file(rigs: &[Rig]) -> Result<(), Box<dyn std::error::Error>> {
-    let data = serde_json::to_string_pretty(rigs)?;
-    fs::write("must_have.json", data)?;
-    Ok(())
-}
-
-// Spacer chain finding functions
-fn can_connect(out_thread: &str, in_thread: &str) -> bool {
-    if out_thread.len() < 2 || in_thread.len() < 2 {
-        return false;
-    }
-    let out_gender = out_thread.chars().last().unwrap();
-    let in_gender = in_thread.chars().last().unwrap();
-    let out_size = &out_thread[..out_thread.len() - 1];
-    let in_size = &in_thread[..in_thread.len() - 1];
-    out_size == in_size && out_gender != in_gender
-}
-
-fn spacer_eq(a: &Rig, b: &Rig) -> bool {
-    a.thread_in == b.thread_in && a.thread_out == b.thread_out && (a.length - b.length).abs() < 1e-6
-}
-
-fn find_minimal_chain<'a>(spacers: &'a [Rig], must_have: &'a [Rig], start: &str, end: &str, target: f64) -> Option<Vec<&'a Rig>> {
-    let mut valid_chains = Vec::new();
-    find_chains(spacers, must_have, 0, start, end, 0.0, Vec::new(), target, &mut valid_chains);
-    valid_chains.into_iter().min_by_key(|chain| chain.len())
-}
-
-fn find_chains<'a>(
-    spacers: &'a [Rig],
-    must_have: &'a [Rig],
-    must_index: usize,
-    current_thread: &str,
-    end: &str,
-    current_sum: f64,
-    current_chain: Vec<&'a Rig>,
-    target: f64,
-    valid_chains: &mut Vec<Vec<&'a Rig>>,
-) {
-    if current_chain.len() >= 10 {
-        return;
-    }
-    for spacer in spacers {
-        if can_connect(current_thread, &spacer.thread_in) {
-            let new_sum = current_sum + spacer.length;
-            if new_sum > target + 1e-6 {
-                continue;
-            }
-            let mut new_chain = current_chain.clone();
-            new_chain.push(spacer);
-            let new_index = if must_index < must_have.len() && spacer_eq(spacer, &must_have[must_index]) {
-                must_index + 1
-            } else {
-                must_index
-            };
-            if (new_sum - target).abs() < 1e-6 && spacer.thread_out == end && new_index == must_have.len() {
-                valid_chains.push(new_chain.clone());
-            }
-            find_chains(spacers, must_have, new_index, &spacer.thread_out, end, new_sum, new_chain, target, valid_chains);
-        }
-    }
-}
-
-fn load_spacers_from_file(path: &str) -> Result<Vec<Rig>, Box<dyn std::error::Error>> {
-    let data = fs::read_to_string(path)?;
-    let spacers: Vec<Rig> = serde_json::from_str(&data)?;
-    Ok(spacers)
+    });
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let rigs = Rc::new(RefCell::new(load_rigs_from_file().unwrap_or_else(|_| Vec::new())));
+    let state = Rc::new(RefCell::new(State::default()));
+    let window = MainWindow::new()?;
 
-    let window = MainWindow::new().unwrap();
-
-    // Set initial rigs
     {
-        let current_rigs = rigs.borrow().clone();
-        let slint_rigs: Vec<UiRig> = current_rigs.iter().map(|r| {
-            UiRig {
-                thread_in: r.thread_in.clone().into(),
-                thread_out: r.thread_out.clone().into(),
-                length: r.length as f32,
-            }
-        }).collect();
-        window.set_rigs(slint::ModelRc::new(slint::VecModel::from(slint_rigs)));
+        let mut current = state.borrow_mut();
+        current.rigs = load_elements("must_have.json").unwrap_or_default();
+        window.set_file_path("must_have.json".into());
+        refresh(&window, &current);
     }
+    wire_callbacks(&window, state);
 
-    // Add rig callback
-    let rigs_clone = rigs.clone();
-    let window_weak = window.as_weak();
-    window.on_add_rig(move |rig| {
-        let new_rig = Rig {
-            thread_in: rig.thread_in.to_string(),
-            thread_out: rig.thread_out.to_string(),
-            length: rig.length as f64,
-        };
-        let updated_rigs = add_rig(&rigs_clone.borrow(), new_rig);
-        *rigs_clone.borrow_mut() = updated_rigs.clone();
-
-        let slint_rigs: Vec<UiRig> = updated_rigs.iter().map(|r| {
-            UiRig {
-                thread_in: r.thread_in.clone().into(),
-                thread_out: r.thread_out.clone().into(),
-                length: r.length as f32,
-            }
-        }).collect();
-
-        if let Some(window) = window_weak.upgrade() {
-            window.set_rigs(slint::ModelRc::new(slint::VecModel::from(slint_rigs)));
-        }
-    });
-
-    // Update rig callback
-    let rigs_clone = rigs.clone();
-    let window_weak_update = window.as_weak();
-    window.on_update_rig(move |index, rig| {
-        let updated_rig = Rig {
-            thread_in: rig.thread_in.to_string(),
-            thread_out: rig.thread_out.to_string(),
-            length: rig.length as f64,
-        };
-        let updated_rigs = update_rig(&rigs_clone.borrow(), index as usize, updated_rig);
-        *rigs_clone.borrow_mut() = updated_rigs.clone();
-
-        let slint_rigs: Vec<UiRig> = updated_rigs.iter().map(|r| {
-            UiRig {
-                thread_in: r.thread_in.clone().into(),
-                thread_out: r.thread_out.clone().into(),
-                length: r.length as f32,
-            }
-        }).collect();
-
-        if let Some(window) = window_weak_update.upgrade() {
-            window.set_rigs(slint::ModelRc::new(slint::VecModel::from(slint_rigs)));
-        }
-    });
-
-    // Delete rig callback
-    let rigs_clone = rigs.clone();
-    let window_weak_delete = window.as_weak();
-    window.on_delete_rig(move |index| {
-        let updated_rigs = delete_rig(&rigs_clone.borrow(), index as usize);
-        *rigs_clone.borrow_mut() = updated_rigs.clone();
-
-        let slint_rigs: Vec<UiRig> = updated_rigs.iter().map(|r| {
-            UiRig {
-                thread_in: r.thread_in.clone().into(),
-                thread_out: r.thread_out.clone().into(),
-                length: r.length as f32,
-            }
-        }).collect();
-
-        if let Some(window) = window_weak_delete.upgrade() {
-            window.set_rigs(slint::ModelRc::new(slint::VecModel::from(slint_rigs)));
-        }
-    });
-
-    // Move rig up callback
-    let rigs_clone = rigs.clone();
-    let window_weak_up = window.as_weak();
-    window.on_move_rig_up(move |index| {
-        let updated_rigs = move_rig_up(&rigs_clone.borrow(), index as usize);
-        *rigs_clone.borrow_mut() = updated_rigs.clone();
-
-        let slint_rigs: Vec<UiRig> = updated_rigs.iter().map(|r| {
-            UiRig {
-                thread_in: r.thread_in.clone().into(),
-                thread_out: r.thread_out.clone().into(),
-                length: r.length as f32,
-            }
-        }).collect();
-
-        if let Some(window) = window_weak_up.upgrade() {
-            window.set_rigs(slint::ModelRc::new(slint::VecModel::from(slint_rigs)));
-        }
-    });
-
-    // Move rig down callback
-    let rigs_clone = rigs.clone();
-    let window_weak_down = window.as_weak();
-    window.on_move_rig_down(move |index| {
-        let updated_rigs = move_rig_down(&rigs_clone.borrow(), index as usize);
-        *rigs_clone.borrow_mut() = updated_rigs.clone();
-
-        let slint_rigs: Vec<UiRig> = updated_rigs.iter().map(|r| {
-            UiRig {
-                thread_in: r.thread_in.clone().into(),
-                thread_out: r.thread_out.clone().into(),
-                length: r.length as f32,
-            }
-        }).collect();
-
-        if let Some(window) = window_weak_down.upgrade() {
-            window.set_rigs(slint::ModelRc::new(slint::VecModel::from(slint_rigs)));
-        }
-    });
-
-    // Save rigs callback
-    let rigs_clone = rigs.clone();
-    window.on_save_rigs(move || {
-        let _ = save_rigs_to_file(&rigs_clone.borrow());
-    });
-
-    // Load rigs callback
-    let rigs_clone = rigs.clone();
-    let window_weak_load = window.as_weak();
-    window.on_load_rigs(move || {
-        if let Ok(loaded_rigs) = load_rigs_from_file() {
-            *rigs_clone.borrow_mut() = loaded_rigs.clone();
-
-            let slint_rigs: Vec<UiRig> = loaded_rigs.iter().map(|r| {
-                UiRig {
-                    thread_in: r.thread_in.clone().into(),
-                    thread_out: r.thread_out.clone().into(),
-                    length: r.length as f32,
-                }
-            }).collect();
-
-            if let Some(window) = window_weak_load.upgrade() {
-                window.set_rigs(slint::ModelRc::new(slint::VecModel::from(slint_rigs)));
-            }
-        }
-    });
-
-    // Find chain callback
-    let rigs_clone = rigs.clone();
-    let window_weak_chain = window.as_weak();
-    window.on_find_chain(move || {
-        let spacers_path = window_weak_chain.upgrade().unwrap().get_spacers_path().to_string();
-        let start_thread = window_weak_chain.upgrade().unwrap().get_start_thread().to_string();
-        let end_thread = window_weak_chain.upgrade().unwrap().get_end_thread().to_string();
-        let target_length_str = window_weak_chain.upgrade().unwrap().get_target_length().to_string();
-
-        let result = match (load_spacers_from_file(&spacers_path), target_length_str.parse::<f64>()) {
-            (Ok(spacers), Ok(target_length)) => {
-                match find_minimal_chain(&spacers, &rigs_clone.borrow(), &start_thread, &end_thread, target_length) {
-                    Some(chain) => {
-                        let mut result = format!("Found chain with {} elements:\n", chain.len());
-                        for element in chain {
-                            result.push_str(&format!("Thread in: {}, Thread out: {}, Length: {}\n",
-                                                   element.thread_in, element.thread_out, element.length));
-                        }
-                        result
-                    }
-                    None => format!("No chain found from {} to {} that sums to {} with required elements",
-                                  start_thread, end_thread, target_length)
-                }
-            }
-            (Err(e), _) => format!("Error loading spacers file '{}': {}", spacers_path, e),
-            (_, Err(_)) => "Error: Invalid target length. Please enter a valid number.".to_string()
-        };
-
-        if let Some(window) = window_weak_chain.upgrade() {
-            window.set_chain_result(result.into());
-        }
-    });
-
-    window.run().unwrap();
-
+    window.run()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use slint::Model;
+
+    #[test]
+    fn find_chain_callback_reports_a_match() {
+        // A GUI test needs a platform window; skip when running headless.
+        let Ok(window) = MainWindow::new() else {
+            return;
+        };
+        wire_callbacks(&window, Rc::new(RefCell::new(State::default())));
+        let path = std::env::temp_dir().join("spacerfinder-test-spacers.json");
+        std::fs::write(
+            &path,
+            r#"[{"thread_in":"M42M","thread_out":"M42F","length":2.0}]"#,
+        )
+        .unwrap();
+        window.set_spacers_path(path.to_string_lossy().to_string().into());
+        window.set_start_thread("M42F".into());
+        window.set_end_thread("M42F".into());
+        window.set_target_length("2.0".into());
+        window.invoke_find_chain();
+        assert!(
+            window.get_result_summary().contains("Found 1 steps"),
+            "summary: {}",
+            window.get_result_summary()
+        );
+        assert_eq!(window.get_result_steps().row_count(), 1);
+
+        // Also accept the common convention where start/end name the
+        // first/last spacer's own threads.
+        window.set_start_thread("M42M".into());
+        window.set_end_thread("M42F".into());
+        window.invoke_find_chain();
+        assert!(
+            window.get_result_summary().contains("Found 1 steps"),
+            "summary: {}",
+            window.get_result_summary()
+        );
+    }
 }
