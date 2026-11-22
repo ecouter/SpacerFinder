@@ -8,8 +8,9 @@ A high-performance Rust command-line tool for finding the minimal chain of space
 - **Thread Compatibility**: Automatically ensures compatible thread connections (same size, opposite gender)
 - **Required Elements**: Enforces inclusion of "must-have" elements in a specific order
 - **Flexible Usage**: Supports multiple uses of the same spacer
-- **Functional Programming**: Implemented using functional programming principles for reliability and maintainability
+- **Functional Programming**: Pure chain-finding logic lives in the shared [`spacer-core`](../spacer-core/) crate
 - **JSON Data Format**: Uses human-readable JSON files for input and output
+- **Shared results**: Reports steps, cumulative lengths, and required-element markers just like RigCreator
 
 ## Installation
 
@@ -17,8 +18,8 @@ A high-performance Rust command-line tool for finding the minimal chain of space
 - Rust toolchain (install from [rustup.rs](https://rustup.rs/))
 
 ### Build from Source
+From the repository root:
 ```bash
-cd Spacer_Finder_CLI
 cargo build --release
 ```
 
@@ -108,6 +109,11 @@ For two elements to connect:
 - Thread sizes must match (e.g., M54 connects to M54)
 - Genders must be opposite (M connects to F, F connects to M)
 
+The `start_thread` and `end_thread` arguments may be given either as the mating
+thread on the external component or as the thread on the first/last spacer
+itself. Both conventions are accepted; the reported chain always shows the
+spacers' actual `thread_in`/`thread_out` values.
+
 **Note**: Adapters with `length: 0.0` can be used for size transitions.
 
 ## Examples
@@ -122,10 +128,10 @@ spacer_finder spacers.json must_have.json M54M M54F 8.0
 
 **Sample Output:**
 ```
-Found chain with 3 elements:
-Thread in: M54F, Thread out: M54M, Length: 5
-Thread in: M54F, Thread out: M54F, Length: 0
-Thread in: M54M, Thread out: M54F, Length: 3
+Found chain with 3 elements (total 8 mm):
+  1. M54F -> M54M   5 mm   (cumulative 5 mm)  [required]
+  2. M54F -> M54F   0 mm   (cumulative 5 mm)
+  3. M54M -> M54F   3 mm   (cumulative 8 mm)
 ```
 
 ### With Required Elements
@@ -136,7 +142,7 @@ If `must_have.json` contains required elements, they will be included in order i
 
 If no valid chain exists:
 ```
-No chain found from M54M to M54F that sums to 8.0 with required elements
+No chain found from M54M to M54F that sums to 8 mm with the required elements.
 ```
 
 ## Integration with GUI Tools

@@ -1,0 +1,208 @@
+import { LineEdit } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+
+// Primary / secondary / danger action button with a small ghost variant.
+export component AppButton inherits Rectangle {
+    in property <string> text;
+    in property <string> kind: "secondary";
+    in property <bool> active: false;
+    in property <bool> enabled: true;
+    in property <length> button-height: 34px;
+    callback clicked();
+
+    height: root.button-height;
+    border-radius: 6px;
+    border-width: 1px;
+    background: !root.enabled ? Theme.surface : (
+        root.kind == "primary" ? (touch.has-hover ? Theme.accent-hover : Theme.accent) : (
+            root.kind == "danger" ? (touch.has-hover ? Theme.danger-hover : Theme.danger) : (
+                (touch.has-hover || root.active) ? Theme.surface-hover : Theme.surface-raised
+            )
+        )
+    );
+    border-color: root.kind == "primary" ? root.background : (root.active ? Theme.accent : Theme.border);
+
+    Text {
+        text: root.text;
+        color: !root.enabled ? Theme.text-muted : (
+            root.kind == "primary" ? Theme.accent-text : (
+                root.kind == "danger" ? #2a0a0a : Theme.text
+            )
+        );
+        font-size: 13px;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+}
+
+// Compact square button used in list rows.
+export component IconButton inherits Rectangle {
+    in property <string> glyph;
+    in property <string> kind: "ghost";
+    in property <bool> enabled: true;
+    in property <string> tooltip-text: "";
+    callback clicked();
+
+    width: 28px;
+    height: 28px;
+    border-radius: 5px;
+    border-width: 1px;
+    background: !root.enabled ? Theme.surface : (touch.has-hover ? Theme.surface-hover : transparent);
+    border-color: root.kind == "danger" ? (touch.has-hover ? Theme.danger : Theme.border) : Theme.border;
+
+    Text {
+        text: root.glyph;
+        color: !root.enabled ? #46566b : (root.kind == "danger" ? Theme.danger : (touch.has-hover ? Theme.accent : Theme.text-muted));
+        font-size: 14px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+}
+
+// Monospace chip for thread specifications.
+export component ThreadBadge inherits Rectangle {
+    in property <string> value;
+    in property <bool> muted: false;
+    // When set, use a fixed width so table columns stay aligned.
+    in property <length> badge-width: 0px;
+
+    height: 24px;
+    width: root.badge-width > 0px ? root.badge-width : max(60px, label.preferred-width + 16px);
+    border-radius: 4px;
+    border-width: 1px;
+    background: Theme.bg;
+    border-color: root.muted ? Theme.border : Theme.border-strong;
+
+    label := Text {
+        text: root.value;
+        color: root.muted ? Theme.text-muted : Theme.accent;
+        font-family: "monospace";
+        font-size: 12px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+export component Card inherits Rectangle {
+    background: Theme.surface;
+    border-width: 1px;
+    border-color: Theme.border;
+    border-radius: Theme.radius;
+    clip: true;
+}
+
+// Labelled text input with helper text, inline error, and optional unit suffix.
+export component FormField inherits Rectangle {
+    in-out property <string> value;
+    in property <string> label;
+    in property <string> placeholder: "";
+    in property <string> hint: "";
+    in property <string> error: "";
+    in property <bool> numeric: false;
+    in property <string> suffix: "";
+    callback edited(string);
+    callback accepted(string);
+
+    VerticalLayout {
+        spacing: 4px;
+        Text {
+            text: root.label;
+            color: Theme.text-muted;
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+        }
+        Rectangle {
+            height: 34px;
+            border-radius: 5px;
+            background: Theme.bg;
+            border-width: 1px;
+            border-color: root.error != "" ? Theme.danger : Theme.border;
+            HorizontalLayout {
+                padding-left: 10px;
+                padding-right: 10px;
+                spacing: 6px;
+                LineEdit {
+                    text <=> root.value;
+                    placeholder-text: root.placeholder;
+                    input-type: root.numeric ? decimal : text;
+                    font-size: 13px;
+                    edited(value) => { root.edited(value); }
+                    accepted(value) => { root.accepted(value); }
+                }
+                Text {
+                    text: root.suffix;
+                    color: Theme.text-muted;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                    width: 22px;
+                }
+            }
+        }
+        Text {
+            text: root.error != "" ? root.error : root.hint;
+            color: root.error != "" ? Theme.danger : Theme.text-muted;
+            font-size: 11px;
+            wrap: word-wrap;
+            visible: root.error != "" || root.hint != "";
+        }
+    }
+}
+
+export component StatusBanner inherits Rectangle {
+    in property <string> message;
+    in property <string> kind: "info";
+
+    height: root.message != "" ? 30px : 0px;
+    border-radius: 5px;
+    background: root.kind == "error" ? #3b2026 : (root.kind == "success" ? #143026 : Theme.surface-raised);
+    border-width: 1px;
+    border-color: root.kind == "error" ? Theme.danger : (root.kind == "success" ? Theme.success : Theme.border);
+    visible: root.message != "";
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        Text {
+            text: root.message;
+            color: root.kind == "error" ? Theme.danger : (root.kind == "success" ? Theme.success : Theme.text);
+            font-size: 12px;
+            vertical-alignment: center;
+            wrap: word-wrap;
+        }
+    }
+}
+
+export component EmptyState inherits Rectangle {
+    in property <string> title;
+    in property <string> detail;
+
+    VerticalLayout {
+        padding: 24px;
+        spacing: 6px;
+        alignment: center;
+        Text {
+            text: root.title;
+            color: Theme.text;
+            font-size: 15px;
+            font-weight: 600;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: root.detail;
+            color: Theme.text-muted;
+            font-size: 12px;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+    }
+}

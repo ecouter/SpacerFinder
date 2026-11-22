@@ -1,441 +1,318 @@
-use serde::{Deserialize, Serialize};
-use std::fs;
-use std::rc::Rc;
+use spacer_core::{
+    add_element, delete_element, format_length, load_elements, save_elements, update_element,
+    validate_length, validate_thread, Element, Thread,
+};
 use std::cell::RefCell;
+use std::cmp::Ordering;
+use std::collections::BTreeMap;
+use std::rc::Rc;
 
-slint::slint! {
-    import { Button, ScrollView, ListView, LineEdit, GridBox } from "std-widgets.slint";
+slint::include_modules!();
 
-    struct UiSpacer {
-        thread_in: string,
-        thread_out: string,
-        length: float,
+#[derive(Default)]
+struct State {
+    elements: Vec<Element>,
+    search: String,
+    sort_mode: i32,
+    edit_index: Option<usize>,
+    dirty: bool,
+}
+
+fn family(element: &Element) -> String {
+    Thread::parse(&element.thread_in)
+        .map(|thread| format!("M{}", thread.size))
+        .unwrap_or_else(|| "Other".to_string())
+}
+
+fn family_key(family: &str) -> u64 {
+    family
+        .strip_prefix('M')
+        .and_then(|digits| digits.parse().ok())
+        .unwrap_or(u64::MAX)
+}
+
+/// Builds a flat list of group-header rows and spacer rows. Each row keeps the
+/// original inventory index so edit/delete stay correct even when filtered.
+fn visible_rows(state: &State) -> (Vec<UiRow>, usize) {
+    let needle = state.search.trim().to_lowercase();
+    let mut items: Vec<(usize, &Element)> = state
+        .elements
+        .iter()
+        .enumerate()
+        .filter(|(_, element)| {
+            needle.is_empty()
+                || element.thread_in.to_lowercase().contains(&needle)
+                || element.thread_out.to_lowercase().contains(&needle)
+                || format_length(element.length).contains(&needle)
+        })
+        .collect();
+
+    items.sort_by(|(index_a, a), (index_b, b)| {
+        family_key(&family(a))
+            .cmp(&family_key(&family(b)))
+            .then_with(|| match state.sort_mode {
+                1 => b.length.partial_cmp(&a.length).unwrap_or(Ordering::Equal),
+                2 => a.length.partial_cmp(&b.length).unwrap_or(Ordering::Equal),
+                _ => a
+                    .thread_in
+                    .cmp(&b.thread_in)
+                    .then_with(|| a.thread_out.cmp(&b.thread_out))
+                    .then_with(|| a.length.partial_cmp(&b.length).unwrap_or(Ordering::Equal)),
+            })
+            .then_with(|| index_a.cmp(index_b))
+    });
+
+    let mut counts = BTreeMap::new();
+    for (_, element) in &items {
+        *counts.entry(family(element)).or_insert(0) += 1;
     }
 
-    export component MainWindow inherits Window {
-        title: "Spacer Manager";
-        width: 800px;
-        height: 600px;
-
-        in-out property <[UiSpacer]> spacers: [];
-        callback add-spacer(UiSpacer);
-        callback update-spacer(int, UiSpacer);
-        callback delete-spacer(int);
-        callback check-duplicate(string, string, float);
-        callback save-spacers();
-        callback load-spacers();
-
-        property <bool> show-add-dialog: false;
-        property <bool> show-edit-dialog: false;
-
-        // Duplicate checking
-        in-out property <string> duplicate-warning: "";
-        in-out property <bool> show-duplicate-options: false;
-
-        VerticalLayout {
-            HorizontalLayout {
-                Button {
-                    text: "Add Spacer";
-                    clicked => {
-                        show-add-dialog = true;
-                    }
-                }
-                Button {
-                    text: "Save";
-                    clicked => {
-                        save-spacers();
-                    }
-                }
-                Button {
-                    text: "Load";
-                    clicked => {
-                        load-spacers();
-                    }
-                }
-            }
-
-            ScrollView {
-                ListView {
-                    for spacer[index] in spacers: Rectangle {
-                        height: 40px;
-                        HorizontalLayout {
-                            Text {
-                                text: spacer.thread_in;
-                                width: 80px;
-                            }
-                            Text {
-                                text: "→";
-                                width: 20px;
-                            }
-                            Text {
-                                text: spacer.thread_out;
-                                width: 80px;
-                            }
-                            Text {
-                                text: @tr("{} mm", spacer.length);
-                                width: 80px;
-                            }
-                            Button {
-                                text: "Edit";
-                                clicked => {
-                                    edit-index = index;
-                                    show-edit-dialog = true;
-                                }
-                            }
-                            Button {
-                                text: "Delete";
-                                clicked => {
-                                    delete-spacer(index);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+    let mut rows = Vec::new();
+    let mut current_family: Option<String> = None;
+    for (index, element) in items {
+        let group = family(element);
+        if current_family.as_deref() != Some(group.as_str()) {
+            rows.push(UiRow {
+                is_header: true,
+                family: group.clone().into(),
+                count: counts[&group],
+                element_index: -1,
+                thread_in: "".into(),
+                thread_out: "".into(),
+                length: 0.0,
+            });
+            current_family = Some(group);
         }
-
-        property <int> edit-index: -1;
-
-        Rectangle {
-            x: (parent.width - self.width) / 2;
-            y: (parent.height - self.height) / 2;
-            width: 350px;
-            height: 280px;
-            background: #4d4d4d;
-            border-radius: 8px;
-            border-width: 1px;
-            border-color: #cccccc;
-            visible: show-add-dialog;
-
-            VerticalLayout {
-                padding: 20px;
-                Text { text: "Add Spacer"; }
-                GridBox {
-                    Row {
-                        Text { text: "Thread In:"; }
-                        thread-in := LineEdit {}
-                    }
-                    Row {
-                        Text { text: "Thread Out:"; }
-                        thread-out := LineEdit {}
-                    }
-                    Row {
-                        Text { text: "Length:"; }
-                        length := LineEdit {
-                            input-type: decimal;
-                        }
-                    }
-                }
-
-                // Warning area for duplicates
-                Rectangle {
-                    height: 40px;
-                    visible: duplicate-warning != "";
-                    background: #ffdddd;
-                    border-radius: 4px;
-                    border-width: 1px;
-                    border-color: #ff6666;
-
-                    Text {
-                        text: duplicate-warning;
-                        color: #cc0000;
-                        font-size: 12px;
-                        wrap: word-wrap;
-                    }
-                }
-
-                HorizontalLayout {
-                    Button {
-                        text: "Cancel";
-                        clicked => {
-                            duplicate-warning = "";
-                            show-duplicate-options = false;
-                            show-add-dialog = false;
-                        }
-                    }
-                    Button {
-                        text: "Add Anyway";
-                        visible: show-duplicate-options;
-                        clicked => {
-                            if thread-in.text != "" && thread-out.text != "" && length.text != "" {
-                                add-spacer({
-                                    thread_in: thread-in.text,
-                                    thread_out: thread-out.text,
-                                    length: length.text.to-float(),
-                                });
-                                thread-in.text = "";
-                                thread-out.text = "";
-                                length.text = "";
-                                duplicate-warning = "";
-                                show-duplicate-options = false;
-                                show-add-dialog = false;
-                            }
-                        }
-                    }
-                    Button {
-                        text: "Add";
-                        clicked => {
-                            if thread-in.text != "" && thread-out.text != "" && length.text != "" {
-                                check-duplicate(thread-in.text, thread-out.text, length.text.to-float());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        Rectangle {
-            x: (parent.width - self.width) / 2;
-            y: (parent.height - self.height) / 2;
-            width: 300px;
-            height: 200px;
-            background: #4d4d4d;
-            border-radius: 8px;
-            border-width: 1px;
-            border-color: #cccccc;
-            visible: show-edit-dialog;
-
-            VerticalLayout {
-                padding: 20px;
-                Text { text: "Edit Spacer"; }
-                GridBox {
-                    Row {
-                        Text { text: "Thread In:"; }
-                        edit-thread-in := LineEdit {}
-                    }
-                    Row {
-                        Text { text: "Thread Out:"; }
-                        edit-thread-out := LineEdit {}
-                    }
-                    Row {
-                        Text { text: "Length:"; }
-                        edit-length := LineEdit {
-                            input-type: decimal;
-                        }
-                    }
-                }
-                HorizontalLayout {
-                    Button {
-                        text: "Cancel";
-                        clicked => {
-                            show-edit-dialog = false;
-                        }
-                    }
-                    Button {
-                        text: "Update";
-                        clicked => {
-                            if edit-thread-in.text != "" && edit-thread-out.text != "" && edit-length.text != "" && edit-index >= 0 {
-                                update-spacer(edit-index, {
-                                    thread_in: edit-thread-in.text,
-                                    thread_out: edit-thread-out.text,
-                                    length: edit-length.text.to-float(),
-                                });
-                                show-edit-dialog = false;
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        rows.push(UiRow {
+            is_header: false,
+            family: "".into(),
+            count: 0,
+            element_index: index as i32,
+            thread_in: element.thread_in.clone().into(),
+            thread_out: element.thread_out.clone().into(),
+            length: element.length as f32,
+        });
     }
+
+    let visible = rows.iter().filter(|row| !row.is_header).count();
+    (rows, visible)
 }
 
-#[derive(Deserialize, Serialize, Clone, Debug)]
-struct Spacer {
-    thread_in: String,
-    thread_out: String,
-    length: f64,
+fn refresh(window: &MainWindow, state: &State) {
+    let (rows, visible) = visible_rows(state);
+    window.set_rows(slint::ModelRc::new(slint::VecModel::from(rows)));
+    window.set_visible_count(visible as i32);
+    window.set_element_count(state.elements.len() as i32);
+    window.set_dirty(state.dirty);
 }
 
-// Pure functions for spacer operations
-fn add_spacer(spacers: &[Spacer], new_spacer: Spacer) -> Vec<Spacer> {
-    let mut result = spacers.to_vec();
-    result.push(new_spacer);
-    result
-}
-
-fn update_spacer(spacers: &[Spacer], index: usize, updated_spacer: Spacer) -> Vec<Spacer> {
-    spacers.iter().enumerate().map(|(i, spacer)| {
-        if i == index {
-            updated_spacer.clone()
-        } else {
-            spacer.clone()
-        }
-    }).collect()
-}
-
-fn delete_spacer(spacers: &[Spacer], index: usize) -> Vec<Spacer> {
-    spacers.iter().enumerate().filter_map(|(i, spacer)| {
-        if i != index {
-            Some(spacer.clone())
-        } else {
-            None
-        }
-    }).collect()
-}
-
-fn load_spacers_from_file() -> Result<Vec<Spacer>, Box<dyn std::error::Error>> {
-    let data = fs::read_to_string("spacers.json")?;
-    let spacers: Vec<Spacer> = serde_json::from_str(&data)?;
-    Ok(spacers)
-}
-
-fn save_spacers_to_file(spacers: &[Spacer]) -> Result<(), Box<dyn std::error::Error>> {
-    let data = serde_json::to_string_pretty(spacers)?;
-    fs::write("spacers.json", data)?;
-    Ok(())
-}
-
-// Check if a spacer with the same specifications already exists
-fn spacer_exists(spacers: &[Spacer], thread_in: &str, thread_out: &str, length: f64) -> bool {
-    spacers.iter().any(|spacer| {
-        spacer.thread_in == thread_in &&
-        spacer.thread_out == thread_out &&
-        (spacer.length - length).abs() < 1e-6
-    })
+fn set_status(window: &MainWindow, message: &str, kind: &str) {
+    window.set_status_message(message.into());
+    window.set_status_kind(kind.into());
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let spacers = Rc::new(RefCell::new(load_spacers_from_file().unwrap_or_else(|_| Vec::new())));
+    let state = Rc::new(RefCell::new(State::default()));
+    let window = MainWindow::new()?;
 
-    let window = MainWindow::new().unwrap();
-
-    // Set initial spacers
     {
-        let current_spacers = spacers.borrow().clone();
-        let slint_spacers: Vec<UiSpacer> = current_spacers.iter().map(|s| {
-            UiSpacer {
-                thread_in: s.thread_in.clone().into(),
-                thread_out: s.thread_out.clone().into(),
-                length: s.length as f32,
-            }
-        }).collect();
-        window.set_spacers(slint::ModelRc::new(slint::VecModel::from(slint_spacers)));
+        let mut current = state.borrow_mut();
+        current.elements = load_elements("spacers.json").unwrap_or_default();
+        window.set_file_path("spacers.json".into());
+        refresh(&window, &current);
     }
 
-    // Add spacer callback
-    let spacers_clone = spacers.clone();
-    let window_weak = window.as_weak();
-    window.on_add_spacer(move |spacer| {
-        let new_spacer = Spacer {
-            thread_in: spacer.thread_in.to_string(),
-            thread_out: spacer.thread_out.to_string(),
-            length: spacer.length as f64,
+    let weak = window.as_weak();
+    let shared = state.clone();
+    window.on_open_add(move || {
+        if let Some(window) = weak.upgrade() {
+            shared.borrow_mut().edit_index = None;
+            window.set_form_title("Add spacer".into());
+            window.set_form_thread_in("".into());
+            window.set_form_thread_out("".into());
+            window.set_form_length("".into());
+            window.set_form_error("".into());
+            window.set_duplicate_pending(false);
+            window.set_show_form_dialog(true);
+        }
+    });
+
+    let weak = window.as_weak();
+    let shared = state.clone();
+    window.on_open_edit(move |index| {
+        if let Some(window) = weak.upgrade() {
+            let element = shared.borrow().elements.get(index as usize).cloned();
+            if let Some(element) = element {
+                shared.borrow_mut().edit_index = Some(index as usize);
+                window.set_form_title("Edit spacer".into());
+                window.set_form_thread_in(element.thread_in.clone().into());
+                window.set_form_thread_out(element.thread_out.clone().into());
+                window.set_form_length(format_length(element.length).into());
+                window.set_form_error("".into());
+                window.set_duplicate_pending(false);
+                window.set_show_form_dialog(true);
+            }
+        }
+    });
+
+    let weak = window.as_weak();
+    let shared = state.clone();
+    window.on_save_form(move |force| {
+        let Some(window) = weak.upgrade() else { return };
+        let thread_in = window.get_form_thread_in().to_string();
+        let thread_out = window.get_form_thread_out().to_string();
+        let length_text = window.get_form_length().to_string();
+
+        let length = match length_text.parse::<f64>() {
+            Ok(value) => value,
+            Err(_) => {
+                window.set_form_error("Enter a valid length, for example 5.0.".into());
+                window.set_duplicate_pending(false);
+                return;
+            }
         };
-        let updated_spacers = add_spacer(&spacers_clone.borrow(), new_spacer);
-        *spacers_clone.borrow_mut() = updated_spacers.clone();
-
-        let slint_spacers: Vec<UiSpacer> = updated_spacers.iter().map(|s| {
-            UiSpacer {
-                thread_in: s.thread_in.clone().into(),
-                thread_out: s.thread_out.clone().into(),
-                length: s.length as f32,
-            }
-        }).collect();
-
-        if let Some(window) = window_weak.upgrade() {
-            window.set_spacers(slint::ModelRc::new(slint::VecModel::from(slint_spacers)));
+        if let Err(message) = validate_thread(&thread_in)
+            .and_then(|_| validate_thread(&thread_out))
+            .and_then(|_| validate_length(length))
+        {
+            window.set_form_error(message.into());
+            window.set_duplicate_pending(false);
+            return;
         }
-    });
 
-    // Update spacer callback
-    let spacers_clone = spacers.clone();
-    let window_weak_update = window.as_weak();
-    window.on_update_spacer(move |index, spacer| {
-        let updated_spacer = Spacer {
-            thread_in: spacer.thread_in.to_string(),
-            thread_out: spacer.thread_out.to_string(),
-            length: spacer.length as f64,
+        let element = Element::new(thread_in, thread_out, length);
+        let mut current = shared.borrow_mut();
+        let edit_index = current.edit_index;
+        let duplicate = current
+            .elements
+            .iter()
+            .enumerate()
+            .any(|(index, existing)| Some(index) != edit_index && existing.matches(&element));
+
+        if duplicate && !force {
+            window
+                .set_form_error("A spacer with these exact specifications already exists.".into());
+            window.set_duplicate_pending(true);
+            return;
+        }
+
+        current.elements = match edit_index {
+            Some(index) => update_element(&current.elements, index, element),
+            None => add_element(&current.elements, element),
         };
-        let updated_spacers = update_spacer(&spacers_clone.borrow(), index as usize, updated_spacer);
-        *spacers_clone.borrow_mut() = updated_spacers.clone();
+        current.edit_index = None;
+        current.dirty = true;
+        refresh(&window, &current);
+        window.set_show_form_dialog(false);
+        window.set_form_error("".into());
+        window.set_duplicate_pending(false);
+        set_status(&window, "Spacer saved to the inventory.", "success");
+    });
 
-        let slint_spacers: Vec<UiSpacer> = updated_spacers.iter().map(|s| {
-            UiSpacer {
-                thread_in: s.thread_in.clone().into(),
-                thread_out: s.thread_out.clone().into(),
-                length: s.length as f32,
-            }
-        }).collect();
-
-        if let Some(window) = window_weak_update.upgrade() {
-            window.set_spacers(slint::ModelRc::new(slint::VecModel::from(slint_spacers)));
+    let weak = window.as_weak();
+    let shared = state.clone();
+    window.on_cancel_form(move || {
+        if let Some(window) = weak.upgrade() {
+            shared.borrow_mut().edit_index = None;
+            window.set_show_form_dialog(false);
+            window.set_form_error("".into());
+            window.set_duplicate_pending(false);
         }
     });
 
-    // Delete spacer callback
-    let spacers_clone = spacers.clone();
-    let window_weak_delete = window.as_weak();
-    window.on_delete_spacer(move |index| {
-        let updated_spacers = delete_spacer(&spacers_clone.borrow(), index as usize);
-        *spacers_clone.borrow_mut() = updated_spacers.clone();
+    let weak = window.as_weak();
+    let shared = state.clone();
+    window.on_confirm_delete(move || {
+        let Some(window) = weak.upgrade() else { return };
+        let index = window.get_delete_index() as usize;
+        let mut current = shared.borrow_mut();
+        if index < current.elements.len() {
+            current.elements = delete_element(&current.elements, index);
+            current.dirty = true;
+            refresh(&window, &current);
+            set_status(&window, "Spacer deleted.", "success");
+        }
+        window.set_show_delete_dialog(false);
+    });
 
-        let slint_spacers: Vec<UiSpacer> = updated_spacers.iter().map(|s| {
-            UiSpacer {
-                thread_in: s.thread_in.clone().into(),
-                thread_out: s.thread_out.clone().into(),
-                length: s.length as f32,
-            }
-        }).collect();
-
-        if let Some(window) = window_weak_delete.upgrade() {
-            window.set_spacers(slint::ModelRc::new(slint::VecModel::from(slint_spacers)));
+    let weak = window.as_weak();
+    window.on_cancel_delete(move || {
+        if let Some(window) = weak.upgrade() {
+            window.set_show_delete_dialog(false);
         }
     });
 
-    // Save spacers callback
-    let spacers_clone = spacers.clone();
-    window.on_save_spacers(move || {
-        let _ = save_spacers_to_file(&spacers_clone.borrow());
-    });
-
-    // Load spacers callback
-    let spacers_clone = spacers.clone();
-    let window_weak_load = window.as_weak();
-    window.on_load_spacers(move || {
-        if let Ok(loaded_spacers) = load_spacers_from_file() {
-            *spacers_clone.borrow_mut() = loaded_spacers.clone();
-
-            let slint_spacers: Vec<UiSpacer> = loaded_spacers.iter().map(|s| {
-                UiSpacer {
-                    thread_in: s.thread_in.clone().into(),
-                    thread_out: s.thread_out.clone().into(),
-                    length: s.length as f32,
-                }
-            }).collect();
-
-            if let Some(window) = window_weak_load.upgrade() {
-                window.set_spacers(slint::ModelRc::new(slint::VecModel::from(slint_spacers)));
+    let weak = window.as_weak();
+    let shared = state.clone();
+    window.on_save_file(move || {
+        let Some(window) = weak.upgrade() else { return };
+        let path = window.get_file_path().to_string();
+        let current = shared.borrow();
+        match save_elements(&path, &current.elements) {
+            Ok(()) => {
+                drop(current);
+                shared.borrow_mut().dirty = false;
+                refresh(&window, &shared.borrow());
+                set_status(
+                    &window,
+                    &format!("Saved {} spacers to {}.", window.get_file_path(), path),
+                    "success",
+                );
             }
+            Err(error) => set_status(&window, &error, "error"),
         }
     });
 
-    // Check duplicate callback
-    let spacers_clone = spacers.clone();
-    let window_weak_check = window.as_weak();
-    window.on_check_duplicate(move |thread_in, thread_out, length| {
-        let exists = spacer_exists(&spacers_clone.borrow(), &thread_in.to_string(), &thread_out.to_string(), length as f64);
-
-        if let Some(window) = window_weak_check.upgrade() {
-            if exists {
-                window.set_duplicate_warning("⚠️ A spacer with these exact specifications already exists!".into());
-                window.set_show_duplicate_options(true);
-            } else {
-                // No duplicate, proceed with adding
-                let spacer = UiSpacer {
-                    thread_in: thread_in,
-                    thread_out: thread_out,
-                    length: length,
-                };
-                // Call the add callback
-                window.invoke_add_spacer(spacer);
-                window.set_duplicate_warning("".into());
-                window.set_show_duplicate_options(false);
+    let weak = window.as_weak();
+    let shared = state.clone();
+    window.on_load_file(move || {
+        let Some(window) = weak.upgrade() else { return };
+        let path = window.get_file_path().to_string();
+        match load_elements(&path) {
+            Ok(elements) => {
+                let mut current = shared.borrow_mut();
+                current.elements = elements;
+                current.dirty = false;
+                current.edit_index = None;
+                let count = current.elements.len();
+                refresh(&window, &current);
+                set_status(
+                    &window,
+                    &format!("Loaded {count} spacers from {path}."),
+                    "success",
+                );
             }
+            Err(error) => set_status(&window, &error, "error"),
         }
     });
 
-    window.run().unwrap();
+    let weak = window.as_weak();
+    let shared = state.clone();
+    window.on_search_changed(move |text| {
+        if let Some(window) = weak.upgrade() {
+            shared.borrow_mut().search = text.to_string();
+            let current = shared.borrow();
+            refresh(&window, &current);
+        }
+    });
 
+    let weak = window.as_weak();
+    let shared = state.clone();
+    window.on_sort_changed(move |mode| {
+        if let Some(window) = weak.upgrade() {
+            shared.borrow_mut().sort_mode = mode;
+            let current = shared.borrow();
+            refresh(&window, &current);
+        }
+    });
+
+    let weak = window.as_weak();
+    window.on_clear_status(move || {
+        if let Some(window) = weak.upgrade() {
+            window.set_status_message("".into());
+        }
+    });
+
+    window.run()?;
     Ok(())
 }

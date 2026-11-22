@@ -1,0 +1,18 @@
+[workspace]
+members = [
+    "spacer-core",
+    "Spacer_Finder_CLI",
+    "RigCreator",
+    "SpacerManager",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.2.0"
+edition = "2021"
+
+[workspace.dependencies]
+slint = "1.19.0"
+slint-build = "1.19.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

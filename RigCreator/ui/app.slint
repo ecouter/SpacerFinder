@@ -1,0 +1,394 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "../../ui-kit/theme.slint";
+import {
+    AppButton, IconButton, ThreadBadge, Card, FormField, StatusBanner, EmptyState,
+} from "../../ui-kit/components.slint";
+
+export struct UiElement {
+    thread_in: string,
+    thread_out: string,
+    length: float,
+}
+
+export struct UiStep {
+    number: int,
+    thread_in: string,
+    thread_out: string,
+    length: float,
+    cumulative: float,
+    required: bool,
+}
+
+export component MainWindow inherits Window {
+    title: "Rig Creator";
+    width: 1120px;
+    height: 760px;
+    background: Theme.bg;
+
+    in-out property <[UiElement]> rigs: [];
+    in-out property <int> rig-count: 0;
+    in-out property <string> file-path: "must_have.json";
+    in-out property <string> spacers-path: "spacers.json";
+    in-out property <string> start-thread: "";
+    in-out property <string> end-thread: "";
+    in-out property <string> target-length: "";
+    in-out property <bool> dirty: false;
+    in-out property <string> status-message: "";
+    in-out property <string> status-kind: "info";
+
+    in-out property <bool> show-form-dialog: false;
+    in-out property <string> form-title: "Add required element";
+    in-out property <string> form-thread-in: "";
+    in-out property <string> form-thread-out: "";
+    in-out property <string> form-length: "";
+    in-out property <string> form-error: "";
+
+    in-out property <bool> show-delete-dialog: false;
+    in-out property <string> delete-label: "";
+    in-out property <int> delete-index: -1;
+
+    in-out property <bool> result-visible: false;
+    in-out property <string> result-summary: "";
+    in-out property <string> result-kind: "info";
+    in-out property <[UiStep]> result-steps: [];
+
+    callback open-add();
+    callback open-edit(int);
+    callback save-form(bool);
+    callback cancel-form();
+    callback confirm-delete();
+    callback cancel-delete();
+    callback move-up(int);
+    callback move-down(int);
+    callback save-file();
+    callback load-file();
+    callback find-chain();
+    callback clear-status();
+
+    Timer {
+        interval: 5s;
+        running: root.status-message != "";
+        triggered => { root.clear-status(); }
+    }
+
+    VerticalLayout {
+        spacing: 0;
+
+        // Header
+        Rectangle {
+            height: 68px;
+            background: Theme.surface;
+            HorizontalLayout {
+                padding-left: 20px;
+                padding-right: 20px;
+                spacing: 12px;
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    alignment: center;
+                    spacing: 2px;
+                    Text {
+                        text: "Rig Creator";
+                        color: Theme.text;
+                        font-size: 18px;
+                        font-weight: 700;
+                    }
+                    Text {
+                        text: @tr("{} required elements · order matters", root.rig-count);
+                        color: Theme.text-muted;
+                        font-size: 12px;
+                    }
+                }
+                AppButton {
+                    text: "＋  Add element";
+                    kind: "primary";
+                    width: 140px;
+                    clicked => { root.open-add(); }
+                }
+                AppButton { text: "Save"; width: 84px; clicked => { root.save-file(); } }
+                AppButton { text: "Load"; width: 84px; clicked => { root.load-file(); } }
+            }
+        }
+        Rectangle { height: 1px; background: Theme.border; }
+
+        HorizontalLayout {
+            padding: 16px;
+            spacing: 14px;
+
+            // Required elements list
+            Card {
+                horizontal-stretch: 2;
+                VerticalLayout {
+                    spacing: 0;
+                    Rectangle {
+                        height: 34px;
+                        background: Theme.surface-raised;
+                        HorizontalLayout {
+                            padding-left: 12px;
+                            padding-right: 12px;
+                            Text {
+                                text: "REQUIRED ELEMENTS";
+                                color: Theme.text-muted;
+                                font-size: 11px;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                            Text {
+                                text: "Must appear in this order";
+                                color: Theme.text-muted;
+                                font-size: 11px;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                    ScrollView {
+                        VerticalLayout {
+                            padding: 4px;
+                            spacing: 2px;
+                            for rig[index] in rigs: Rectangle {
+                                height: 44px;
+                                border-radius: 4px;
+                                background: Math.mod(index, 2) == 0 ? Theme.surface : Theme.surface-raised;
+                                HorizontalLayout {
+                                    padding-left: 8px;
+                                    padding-right: 8px;
+                                    spacing: 6px;
+                                    Rectangle {
+                                        width: 24px;
+                                        height: 22px;
+                                        border-radius: 4px;
+                                        background: Theme.surface-hover;
+                                        Text {
+                                            text: @tr("{}", index + 1);
+                                            color: Theme.accent;
+                                            font-size: 11px;
+                                            font-weight: 700;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                    ThreadBadge { value: rig.thread_in; badge-width: 64px; }
+                                    Text { text: "→"; color: Theme.text-muted; width: 16px; horizontal-alignment: center; vertical-alignment: center; }
+                                    ThreadBadge { value: rig.thread_out; badge-width: 64px; }
+                                    Text { text: @tr("{} mm", rig.length); color: Theme.text; font-size: 13px; width: 72px; vertical-alignment: center; }
+                                    Rectangle { horizontal-stretch: 1; }
+                                    IconButton { glyph: "↑"; enabled: index > 0; clicked => { root.move-up(index); } }
+                                    IconButton { glyph: "↓"; enabled: index < root.rigs.length - 1; clicked => { root.move-down(index); } }
+                                    IconButton { glyph: "✎"; clicked => { root.open-edit(index); } }
+                                    IconButton { glyph: "✕"; kind: "danger"; clicked => {
+                                        root.delete-index = index;
+                                        root.delete-label = @tr("{} → {} · {} mm", rig.thread_in, rig.thread_out, rig.length);
+                                        root.show-delete-dialog = true;
+                                    } }
+                                }
+                            }
+                            if root.rigs.length == 0: EmptyState {
+                                title: "No required elements";
+                                detail: "Add the elements every chain must contain, in order.";
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Chain tester
+            Card {
+                width: 380px;
+                VerticalLayout {
+                    padding: 14px;
+                    spacing: 10px;
+                    Text {
+                        text: "CHAIN TESTER";
+                        color: Theme.accent;
+                        font-size: 12px;
+                        font-weight: 700;
+                        letter-spacing: 1px;
+                    }
+                    FormField {
+                        label: "SPACERS FILE";
+                        value <=> root.spacers-path;
+                        height: 54px;
+                        accepted(text) => { root.find-chain(); }
+                    }
+                    FormField {
+                        label: "START THREAD";
+                        value <=> root.start-thread;
+                        placeholder: "M54M";
+                        hint: "Size + gender, e.g. M54M";
+                        height: 66px;
+                        accepted(text) => { root.find-chain(); }
+                    }
+                    FormField {
+                        label: "END THREAD";
+                        value <=> root.end-thread;
+                        placeholder: "M54F";
+                        hint: "Size + gender, e.g. M54F";
+                        height: 66px;
+                        accepted(text) => { root.find-chain(); }
+                    }
+                    FormField {
+                        label: "TARGET LENGTH";
+                        value <=> root.target-length;
+                        placeholder: "8.0";
+                        hint: "Exact total length";
+                        numeric: true;
+                        suffix: "mm";
+                        height: 66px;
+                        accepted(text) => { root.find-chain(); }
+                    }
+                    AppButton {
+                        text: "Find chain";
+                        kind: "primary";
+                        height: 36px;
+                        clicked => { root.find-chain(); }
+                    }
+                    StatusBanner {
+                        message: root.result-summary;
+                        kind: root.result-kind;
+                    }
+                    ScrollView {
+                        VerticalLayout {
+                            spacing: 2px;
+                            for step[index] in root.result-steps: Rectangle {
+                                height: 32px;
+                                border-radius: 4px;
+                                background: Math.mod(index, 2) == 0 ? Theme.surface-raised : Theme.surface;
+                                HorizontalLayout {
+                                    padding-left: 6px;
+                                    padding-right: 6px;
+                                    spacing: 4px;
+                                    Text { text: @tr("#{}", step.number); color: Theme.text-muted; font-size: 11px; width: 26px; vertical-alignment: center; }
+                                    ThreadBadge { value: step.thread_in; badge-width: 56px; }
+                                    Text { text: "→"; color: Theme.text-muted; width: 12px; horizontal-alignment: center; vertical-alignment: center; }
+                                    ThreadBadge { value: step.thread_out; badge-width: 56px; }
+                                    Text { text: @tr("{} mm", step.length); color: Theme.text; font-size: 11px; width: 50px; vertical-alignment: center; }
+                                    Text { text: @tr("Σ{}", step.cumulative); color: Theme.text-muted; font-size: 10px; width: 44px; vertical-alignment: center; }
+                                    Text { text: step.required ? "REQ" : ""; color: Theme.warning; font-size: 10px; font-weight: 700; width: 28px; vertical-alignment: center; }
+                                }
+                            }
+                            if !root.result-visible: EmptyState {
+                                title: "No chain tested yet";
+                                detail: "Enter the threads and target length, then press Find chain.";
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Status bar
+        Rectangle { height: 1px; background: Theme.border; }
+        Rectangle {
+            height: 38px;
+            background: Theme.surface;
+            HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 16px;
+                spacing: 12px;
+                Text {
+                    text: @tr("File: {}", root.file-path);
+                    color: Theme.text-muted;
+                    font-size: 11px;
+                    vertical-alignment: center;
+                }
+                Rectangle { horizontal-stretch: 1; }
+                StatusBanner {
+                    message: root.status-message;
+                    kind: root.status-kind;
+                    width: 340px;
+                }
+                Text {
+                    text: root.dirty ? "● Unsaved changes" : "● Saved";
+                    color: root.dirty ? Theme.warning : Theme.success;
+                    font-size: 11px;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+
+    // Modal layer
+    Rectangle {
+        visible: root.show-form-dialog || root.show-delete-dialog;
+        background: #000000aa;
+
+        FocusScope {
+            capture-key-pressed(event) => {
+                if (event.text == Key.Escape) {
+                    if (root.show-delete-dialog) { root.cancel-delete(); } else { root.cancel-form(); }
+                    return accept;
+                }
+                return reject;
+            }
+
+            if root.show-form-dialog: Card {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                width: 460px;
+                height: 340px;
+                border-color: Theme.border-strong;
+
+                VerticalLayout {
+                    padding: 20px;
+                    spacing: 10px;
+                    Text { text: root.form-title; color: Theme.text; font-size: 17px; font-weight: 700; }
+                    FormField {
+                        label: "THREAD IN";
+                        value <=> root.form-thread-in;
+                        placeholder: "M54F";
+                        hint: "e.g. M54F (female M54 thread)";
+                        height: 64px;
+                        accepted(text) => { root.save-form(false); }
+                    }
+                    FormField {
+                        label: "THREAD OUT";
+                        value <=> root.form-thread-out;
+                        placeholder: "M54M";
+                        hint: "e.g. M54M (male M54 thread)";
+                        height: 64px;
+                        accepted(text) => { root.save-form(false); }
+                    }
+                    FormField {
+                        label: "LENGTH";
+                        value <=> root.form-length;
+                        placeholder: "5.0";
+                        hint: "Non-negative length in millimetres";
+                        numeric: true;
+                        suffix: "mm";
+                        height: 64px;
+                        accepted(text) => { root.save-form(false); }
+                    }
+                    StatusBanner { message: root.form-error; kind: "error"; }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        AppButton { text: "Cancel"; width: 110px; clicked => { root.cancel-form(); } }
+                        Rectangle { horizontal-stretch: 1; }
+                        AppButton { text: "Save"; kind: "primary"; width: 110px; clicked => { root.save-form(false); } }
+                    }
+                }
+            }
+
+            if root.show-delete-dialog: Card {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                width: 400px;
+                height: 170px;
+                border-color: Theme.danger;
+
+                VerticalLayout {
+                    padding: 20px;
+                    spacing: 10px;
+                    Text { text: "Delete this element?"; color: Theme.text; font-size: 16px; font-weight: 700; }
+                    Text { text: root.delete-label; color: Theme.text-muted; font-size: 13px; }
+                    Rectangle { vertical-stretch: 1; }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        AppButton { text: "Cancel"; width: 110px; clicked => { root.cancel-delete(); } }
+                        Rectangle { horizontal-stretch: 1; }
+                        AppButton { text: "Delete"; kind: "danger"; width: 110px; clicked => { root.confirm-delete(); } }
+                    }
+                }
+            }
+        }
+    }
+}

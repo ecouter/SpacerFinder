@@ -1,0 +1,403 @@
+import { LineEdit, ScrollView } from "std-widgets.slint";
+import { Theme } from "../../ui-kit/theme.slint";
+import {
+    AppButton, IconButton, ThreadBadge, Card, FormField, StatusBanner, EmptyState,
+} from "../../ui-kit/components.slint";
+
+export struct UiRow {
+    is-header: bool,
+    family: string,
+    count: int,
+    element-index: int,
+    thread-in: string,
+    thread-out: string,
+    length: float,
+}
+
+export component MainWindow inherits Window {
+    title: "Spacer Manager";
+    width: 1040px;
+    height: 720px;
+    background: Theme.bg;
+
+    in-out property <[UiRow]> rows: [];
+    in-out property <int> element-count: 0;
+    in-out property <int> visible-count: 0;
+    in-out property <string> search-text: "";
+    in-out property <int> sort-mode: 0;
+    in-out property <string> file-path: "spacers.json";
+    in-out property <bool> dirty: false;
+    in-out property <string> status-message: "";
+    in-out property <string> status-kind: "info";
+
+    in-out property <bool> show-form-dialog: false;
+    in-out property <string> form-title: "Add spacer";
+    in-out property <string> form-thread-in: "";
+    in-out property <string> form-thread-out: "";
+    in-out property <string> form-length: "";
+    in-out property <string> form-error: "";
+    in-out property <bool> duplicate-pending: false;
+
+    in-out property <bool> show-delete-dialog: false;
+    in-out property <string> delete-label: "";
+    in-out property <int> delete-index: -1;
+
+    callback open-add();
+    callback open-edit(int);
+    callback save-form(bool);
+    callback cancel-form();
+    callback confirm-delete();
+    callback cancel-delete();
+    callback save-file();
+    callback load-file();
+    callback search-changed(string);
+    callback sort-changed(int);
+    callback clear-status();
+
+    Timer {
+        interval: 5s;
+        running: root.status-message != "";
+        triggered => { root.clear-status(); }
+    }
+
+    VerticalLayout {
+        spacing: 0;
+
+        // Header
+        Rectangle {
+            height: 68px;
+            background: Theme.surface;
+            HorizontalLayout {
+                padding-left: 20px;
+                padding-right: 20px;
+                spacing: 12px;
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    alignment: center;
+                    spacing: 2px;
+                    Text {
+                        text: "Spacer Manager";
+                        color: Theme.text;
+                        font-size: 18px;
+                        font-weight: 700;
+                    }
+                    Text {
+                        text: @tr("{} spacers in inventory", root.element-count);
+                        color: Theme.text-muted;
+                        font-size: 12px;
+                    }
+                }
+                AppButton {
+                    text: "＋  Add spacer";
+                    kind: "primary";
+                    width: 140px;
+                    clicked => { root.open-add(); }
+                }
+                AppButton {
+                    text: "Save";
+                    width: 84px;
+                    clicked => { root.save-file(); }
+                }
+                AppButton {
+                    text: "Load";
+                    width: 84px;
+                    clicked => { root.load-file(); }
+                }
+            }
+        }
+        Rectangle { height: 1px; background: Theme.border; }
+
+        // Toolbar + inventory
+        VerticalLayout {
+            padding: 16px;
+            spacing: 12px;
+
+            HorizontalLayout {
+                spacing: 8px;
+                Rectangle {
+                    height: 34px;
+                    width: 260px;
+                    border-radius: 5px;
+                    background: Theme.bg;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    HorizontalLayout {
+                        padding-left: 10px;
+                        padding-right: 10px;
+                        LineEdit {
+                            text <=> root.search-text;
+                            placeholder-text: "Filter by thread or length…";
+                            font-size: 13px;
+                            edited(value) => { root.search-changed(value); }
+                        }
+                    }
+                }
+                Text {
+                    text: "Sort";
+                    color: Theme.text-muted;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                }
+                AppButton {
+                    text: "Thread";
+                    width: 78px;
+                    active: root.sort-mode == 0;
+                    clicked => { root.sort-changed(0); }
+                }
+                AppButton {
+                    text: "Length ↓";
+                    width: 90px;
+                    active: root.sort-mode == 1;
+                    clicked => { root.sort-changed(1); }
+                }
+                AppButton {
+                    text: "Length ↑";
+                    width: 90px;
+                    active: root.sort-mode == 2;
+                    clicked => { root.sort-changed(2); }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                Text {
+                    text: @tr("{} shown", root.visible-count);
+                    color: Theme.text-muted;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                }
+            }
+
+            Card {
+                VerticalLayout {
+                    spacing: 0;
+                    Rectangle {
+                        height: 34px;
+                        background: Theme.surface-raised;
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 8px;
+                            spacing: 6px;
+                            Text { text: "THREAD IN"; color: Theme.text-muted; font-size: 11px; width: Theme.col-thread; vertical-alignment: center; }
+                            Text { text: ""; width: Theme.col-arrow; }
+                            Text { text: "THREAD OUT"; color: Theme.text-muted; font-size: 11px; width: Theme.col-thread; vertical-alignment: center; }
+                            Text { text: "LENGTH"; color: Theme.text-muted; font-size: 11px; width: Theme.col-length; vertical-alignment: center; }
+                        }
+                    }
+
+                    ScrollView {
+                        VerticalLayout {
+                            padding: 4px;
+                            spacing: 2px;
+                            for row in rows: Rectangle {
+                                height: row.is-header ? 30px : 44px;
+                                border-radius: 4px;
+                                background: row.is-header ? Theme.surface-hover : (
+                                    Math.mod(row.element-index, 2) == 0 ? Theme.surface : Theme.surface-raised
+                                );
+
+                                if row.is-header: HorizontalLayout {
+                                    padding-left: 8px;
+                                    padding-right: 8px;
+                                    spacing: 6px;
+                                    Text {
+                                        text: @tr("{}", row.family);
+                                        color: Theme.accent;
+                                        font-size: 12px;
+                                        font-weight: 700;
+                                        width: Theme.col-thread;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: @tr("{} spacers", row.count);
+                                        color: Theme.text-muted;
+                                        font-size: 11px;
+                                        vertical-alignment: center;
+                                    }
+                                    Rectangle { horizontal-stretch: 1; }
+                                }
+                                if !row.is-header: HorizontalLayout {
+                                    padding-left: 8px;
+                                    padding-right: 8px;
+                                    spacing: 6px;
+                                    ThreadBadge { value: row.thread-in; badge-width: Theme.col-thread; }
+                                    Text { text: "→"; color: Theme.text-muted; width: Theme.col-arrow; horizontal-alignment: center; vertical-alignment: center; }
+                                    ThreadBadge { value: row.thread-out; badge-width: Theme.col-thread; }
+                                    Text { text: @tr("{} mm", row.length); color: Theme.text; font-size: 13px; width: Theme.col-length; vertical-alignment: center; }
+                                    Rectangle { horizontal-stretch: 1; }
+                                    IconButton { glyph: "✎"; clicked => { root.open-edit(row.element-index); } }
+                                    IconButton { glyph: "✕"; kind: "danger"; clicked => {
+                                        root.delete-index = row.element-index;
+                                        root.delete-label = @tr("{} → {} · {} mm", row.thread-in, row.thread-out, row.length);
+                                        root.show-delete-dialog = true;
+                                    } }
+                                }
+                            }
+                            if root.visible-count == 0: EmptyState {
+                                title: root.search-text != "" ? "No matching spacers" : "Inventory is empty";
+                                detail: root.search-text != "" ? "Try a different filter." : "Add your first spacer to start building chains.";
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Status bar
+        Rectangle { height: 1px; background: Theme.border; }
+        Rectangle {
+            height: 38px;
+            background: Theme.surface;
+            HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 16px;
+                spacing: 12px;
+                Text {
+                    text: @tr("File: {}", root.file-path);
+                    color: Theme.text-muted;
+                    font-size: 11px;
+                    vertical-alignment: center;
+                }
+                Rectangle { horizontal-stretch: 1; }
+                StatusBanner {
+                    message: root.status-message;
+                    kind: root.status-kind;
+                    width: 340px;
+                }
+                Text {
+                    text: root.dirty ? "● Unsaved changes" : "● Saved";
+                    color: root.dirty ? Theme.warning : Theme.success;
+                    font-size: 11px;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+
+    // Modal layer
+    Rectangle {
+        visible: root.show-form-dialog || root.show-delete-dialog;
+        background: #000000aa;
+
+        FocusScope {
+            capture-key-pressed(event) => {
+                if (event.text == Key.Escape) {
+                    if (root.show-delete-dialog) { root.cancel-delete(); } else { root.cancel-form(); }
+                    return accept;
+                }
+                return reject;
+            }
+
+            // Add / edit dialog
+            if root.show-form-dialog: Card {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                width: 460px;
+                height: 360px;
+                border-color: Theme.border-strong;
+
+                VerticalLayout {
+                    padding: 20px;
+                    spacing: 10px;
+                    Text {
+                        text: root.form-title;
+                        color: Theme.text;
+                        font-size: 17px;
+                        font-weight: 700;
+                    }
+                    Text {
+                        text: "Threads use size + gender notation, for example M54M.";
+                        color: Theme.text-muted;
+                        font-size: 11px;
+                    }
+                    FormField {
+                        label: "THREAD IN";
+                        value <=> root.form-thread-in;
+                        placeholder: "M54F";
+                        hint: "e.g. M54F (female M54 thread)";
+                        height: 64px;
+                        accepted(text) => { root.save-form(false); }
+                    }
+                    FormField {
+                        label: "THREAD OUT";
+                        value <=> root.form-thread-out;
+                        placeholder: "M54M";
+                        hint: "e.g. M54M (male M54 thread)";
+                        height: 64px;
+                        accepted(text) => { root.save-form(false); }
+                    }
+                    FormField {
+                        label: "LENGTH";
+                        value <=> root.form-length;
+                        placeholder: "5.0";
+                        hint: "Non-negative length in millimetres";
+                        numeric: true;
+                        suffix: "mm";
+                        height: 64px;
+                        accepted(text) => { root.save-form(false); }
+                    }
+                    StatusBanner {
+                        message: root.form-error;
+                        kind: "error";
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        AppButton {
+                            text: "Cancel";
+                            width: 100px;
+                            clicked => { root.cancel-form(); }
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                        AppButton {
+                            text: "Save anyway";
+                            kind: "danger";
+                            width: 120px;
+                            visible: root.duplicate-pending;
+                            clicked => { root.save-form(true); }
+                        }
+                        AppButton {
+                            text: "Save";
+                            kind: "primary";
+                            width: 100px;
+                            clicked => { root.save-form(false); }
+                        }
+                    }
+                }
+            }
+
+            // Delete confirmation
+            if root.show-delete-dialog: Card {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                width: 400px;
+                height: 170px;
+                border-color: Theme.danger;
+
+                VerticalLayout {
+                    padding: 20px;
+                    spacing: 10px;
+                    Text {
+                        text: "Delete this spacer?";
+                        color: Theme.text;
+                        font-size: 16px;
+                        font-weight: 700;
+                    }
+                    Text {
+                        text: root.delete-label;
+                        color: Theme.text-muted;
+                        font-size: 13px;
+                    }
+                    Rectangle { vertical-stretch: 1; }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        AppButton { text: "Cancel"; width: 110px; clicked => { root.cancel-delete(); } }
+                        Rectangle { horizontal-stretch: 1; }
+                        AppButton {
+                            text: "Delete";
+                            kind: "danger";
+                            width: 110px;
+                            clicked => { root.confirm-delete(); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
